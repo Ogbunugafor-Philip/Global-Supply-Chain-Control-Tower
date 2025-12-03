@@ -10,11 +10,11 @@ Built for "Nexus Logistics," a fictional global distributor, this system moves b
 
 1. The "Scale vs. Speed" Bottleneck: With transaction volumes exceeding 70,000 rows per quarter, Excel-based reporting crashes and fails to update in real-time. Manual data consolidation creates a 24-hour information lag, making "Real-Time" decision-making impossible.
 
-Business Impact: $450k lost annually in expedited shipping fees to compensate for late detection of delays.
+  Business Impact: $450k lost annually in expedited shipping fees to compensate for late detection of delays.
 
 2. Reactive vs. Predictive Blindness: The current system flags a shipment as "Late" only after the expected arrival date has passed. There is no capability to predict delays based on leading indicators (e.g., specific carrier reliability during holiday seasons).
 
-Business Impact: Customer satisfaction scores have dropped 15% due to an inability to provide proactive delay notifications.
+  Business Impact: Customer satisfaction scores have dropped 15% due to an inability to provide proactive delay notifications.
 
 3. The "Black Box" of Vendor Performance: Without a unified semantic layer, different departments calculate "On-Time Delivery" differently. Management lacks a standardized view to hold suppliers accountable or negotiate better rates based on actual performance data.
 

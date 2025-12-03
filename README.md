@@ -359,4 +359,219 @@ mysql -u nexus_user -p -e "SELECT COUNT(*) FROM nexus_db.shipments;"
 ``` 
 <img width="975" height="354" alt="image" src="https://github.com/user-attachments/assets/5f60c5ed-d1f5-4f0d-8dcb-9b12f15e4980" />
 
+### PHASE 2: SQL ENGINEERING & LOGIC
+
+### Step 1: Implement database indexing on high-cardinality columns (tracking_number, product_id) to ensure sub-second query response times on the 73k dataset
+
+In this step, we are shifting focus from Functionality (making it work) to Performance (making it fast). Right now, if you search for a single tracking number, MySQL has to perform a "Full Table Scan," meaning it reads every single one of the 73,000 rows to find the match. As data grows, this becomes incredibly slow.
+
+We will implement Database Indexing on high-cardinality columns like tracking_number and product. Think of an index like the alphabetical index at the back of a textbook; instead of reading every page to find a topic, the database can flip directly to the exact row. By adding these indexes, we ensure that even with 73,000+ records, our query response times remain sub-second, which is critical for the real-time dashboard we will build later.
+
+•	Create the Indexing Script named add_indexes.sql in the main project folder and paste the below;
+```
+USE nexus_db;
+
+-- 1. Optimize Product Searches
+-- Speeds up queries like: "Show me all Laptops"
+CREATE INDEX idx_product ON shipments(product);
+
+-- 2. Optimize Carrier Performance Analysis
+-- Critical for calculating "Average Vendor Lead Time" later
+CREATE INDEX idx_carrier ON shipments(carrier);
+
+-- 3. Optimize Date Ranges
+-- Speeds up: "Show me shipments from November"
+CREATE INDEX idx_ship_date ON shipments(ship_date);
+
+-- 4. Optimize Status Filtering
+-- Speeds up: "Show me all Late shipments"
+CREATE INDEX idx_status ON shipments(status);
+```
+
+•	Run this command to apply the new rules to your database:
+```
+mysql -u nexus_user -p < add_indexes.sql
+```
+
+•	Let's confirm the indexes are actually there. Run this command:
+```
+mysql -u nexus_user -p -e "SHOW INDEX FROM nexus_db.shipments;"
+```
+<img width="975" height="352" alt="image" src="https://github.com/user-attachments/assets/b0135be7-6c9d-4eb1-8640-c542c76098d8" />
+
+
+### Step 2: Develop SQL Stored Procedures to automate inventory adjustments and flag "High Value" shipments based on cost thresholds.
+
+In this step, we are teaching the database to manage itself. Right now, your data is "dumb". It just sits there. If a shipment costs $5,000, the database doesn't treat it differently than a $10 shipment. We will change that by writing a Stored Procedure (a saved automation script) named CategorizeHighValue.
+
+#### What this automation will do:
+
+i.	Modify the Table: First, it will add a new column called value_tier to your table (since we didn't add it originally).
+
+ii.	Scan & Flag: It will automatically scan all 73,000 rows.
+
+iii.	Apply Logic: If a shipment's shipping cost is over $2,000, it will stamp it as "High Value". If it's less, it stamps it as "Standard".
+
+This allows management to instantly filter for high-risk, high-value cargo without manually calculating costs in Excel.
+
+
+•	Create the Procedure Script named setup_procedures.sql and paste the below in it;
+```
+USE nexus_db;
+
+-- 1. Add the new column to store our tags (if it doesn't exist)
+-- We use a safe check to avoid errors if you run it twice
+SET @dbname = DATABASE();
+SET @tablename = "shipments";
+SET @columnname = "value_tier";
+SET @preparedStatement = (SELECT IF(
+  (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE
+      (table_name = @tablename)
+      AND (table_schema = @dbname)
+      AND (column_name = @columnname)
+  ) > 0,
+  "SELECT 1",
+  "ALTER TABLE shipments ADD COLUMN value_tier VARCHAR(20)"
+));
+PREPARE alterIfNotExists FROM @preparedStatement;
+EXECUTE alterIfNotExists;
+DEALLOCATE PREPARE alterIfNotExists;
+
+-- 2. Drop the procedure if it exists (Clean Slate)
+DROP PROCEDURE IF EXISTS FlagHighValueShipments;
+
+-- 3. Create the Automation Routine
+DELIMITER //
+
+CREATE PROCEDURE FlagHighValueShipments()
+BEGIN
+    -- Flag Expensive Shipments (> $2000)
+    UPDATE shipments 
+    SET value_tier = 'High Value' 
+    WHERE shipping_cost > 2000;
+
+    -- Flag Standard Shipments (<= $2000)
+    UPDATE shipments 
+    SET value_tier = 'Standard' 
+    WHERE shipping_cost <= 2000 OR shipping_cost IS NULL;
+    
+    SELECT 'Success: Shipments have been categorized.' AS Status_Message;
+END //
+
+DELIMITER ;
+```
+
+•	Now, load this logic into the database. Run;
+```
+mysql -u nexus_user -p < setup_procedures.sql
+```
+
+Now that the "mini-program" is saved in the database, let's run it to actually update your 73,000 rows. Run;
+```
+mysql -u nexus_user -p -e "CALL nexus_db.FlagHighValueShipments();"
+```
+<img width="975" height="166" alt="image" src="https://github.com/user-attachments/assets/d5adf174-ae3e-4055-aae9-15c841cf9309" />
+ 
+
+•	Let's check if it worked. We will ask the database to count how many "High Value" shipments we have. Run;
+```
+mysql -u nexus_user -p -e "SELECT value_tier, COUNT(*) FROM nexus_db.shipments GROUP BY value_tier;"
+```
+<img width="975" height="200" alt="image" src="https://github.com/user-attachments/assets/997bed70-9b00-4f4e-a3d9-06252a219640" />
+ 
+
+### Step 3: Construct a master SQL View (vw_ml_training_data) that joins Fact and Dimensions to flatten the data specifically for the Python Machine Learning model.
+
+In this step, we bridge the gap between SQL (Data Storage) and Python (Data Science). Machine Learning models are picky. They do not want "noise" like Customer Names or internal IDs (tracking_number), and they cannot read raw tables efficiently if you are constantly changing columns. They need a clean, consistent dataset.
+We will create a SQL View named vw_ml_training_data. Think of a "View" as a Virtual Table. It does not store data itself; instead, it runs a saved query every time you access it.
+
+#### Why this is critical:
+
+i.	Filtering: It will strictly select only the columns relevant for prediction (e.g., carrier, origin, ship_date, is_late), ignoring "noise" like customer_name.
+
+ii.	Protection: It creates an abstraction layer. If you change your main table structure later, you only fix the View, and your Python ML script (which we build in Phase 3) never breaks.
+
+
+•	Create a new file named create_view.sql in your main project folder.
+```
+USE nexus_db;
+
+-- 1. Clean Slate
+DROP VIEW IF EXISTS vw_ml_training_data;
+
+-- 2. Create the Virtual Table
+CREATE VIEW vw_ml_training_data AS
+SELECT 
+    carrier,
+    origin,
+    destination,
+    -- Extract specific time features for the AI to learn from
+    MONTH(ship_date) as ship_month,
+    DAYOFWEEK(ship_date) as ship_day_of_week,
+    shipping_cost,
+    value_tier,
+    -- The Answer Key (Target Variable)
+    is_late
+FROM 
+    shipments;
+```
+
+•	Run this command to save the view definition in the database.
+```
+mysql -u nexus_user -p < create_view.sql
+```
+
+•	Let's look at the data through the eyes of the Machine Learning model. Run
+```
+mysql -u nexus_user -p -e "SELECT * FROM nexus_db.vw_ml_training_data LIMIT 5;"
+```
+<img width="975" height="233" alt="image" src="https://github.com/user-attachments/assets/a6c07936-c11c-4cb4-93de-d45993a2c926" />
+ 
+### Step 4: Write Window Functions to calculate historical "Average Vendor Lead Time," which serves as a critical feature input for the ML model.
+
+In this step, we will calculate Historical Context. Right now, if you look at a row, you know that specific shipment was late. But the AI needs to know: "Is this carrier usually late?"
+We will write a query using Window Functions to calculate the Average Vendor Lead Time. Unlike a standard GROUP BY which squashes rows together, a Window Function allows us to keep all 73,000 rows while adding a new column that says "On average, this carrier takes 12.5 days." This is a powerful "Feature" that improves the accuracy of prediction models significantly.
+
+•	Create a new file named feature_engineering.sql in your main project folder and paste the below.
+```
+USE nexus_db;
+
+-- Create a View that creates "Smart Features" for our Analysis
+CREATE OR REPLACE VIEW vw_carrier_performance AS
+SELECT 
+    tracking_number,
+    carrier,
+    origin,
+    destination,
+    is_late,
+    
+    -- 1. How long did THIS shipment take? (Raw Data)
+    DATEDIFF(actual_arrival_date, ship_date) as actual_days_taken,
+    
+    -- 2. What is the AVERAGE time this Carrier takes? (Window Function)
+    -- This looks at the entire history of the carrier
+    AVG(DATEDIFF(actual_arrival_date, ship_date)) 
+        OVER (PARTITION BY carrier) as carrier_avg_lead_time,
+
+    -- 3. Compare this shipment to the Carrier's Average
+    (DATEDIFF(actual_arrival_date, ship_date) - 
+        AVG(DATEDIFF(actual_arrival_date, ship_date)) OVER (PARTITION BY carrier)) 
+        as diff_from_avg
+FROM 
+    shipments;
+```
+
+•	Run this command to save this smart logic into the database.
+```
+mysql -u nexus_user -p < feature_engineering.sql
+```
+
+•	Let's see if the database is now calculating averages on the fly.
+```
+mysql -u nexus_user -p -e "SELECT carrier, actual_days_taken, carrier_avg_lead_time FROM nexus_db.vw_carrier_performance LIMIT 10;"
+``` 
+<img width="975" height="371" alt="image" src="https://github.com/user-attachments/assets/029a24fc-d742-47f3-9a68-0b56b30b0e5c" />
+
 

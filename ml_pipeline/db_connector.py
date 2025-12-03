@@ -5,7 +5,7 @@ from urllib.parse import quote_plus  # <--- NEW IMPORT
 
 # 1. Database Connection Details
 DB_USER = 'nexus_user'
-DB_PASSWORD = 'Osita@1989'  # Your password with the special character
+DB_PASSWORD = 'YOUR_PASSWORD'  # Your password with the special character
 DB_HOST = 'localhost'
 DB_NAME = 'nexus_db'
 

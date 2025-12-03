@@ -6,7 +6,7 @@ import db_connector
 
 # 1. Database Setup
 DB_USER = 'nexus_user'
-DB_PASSWORD = 'Osita@1989' 
+DB_PASSWORD = 'YOUR_PASSWORD' 
 DB_HOST = 'localhost'
 DB_NAME = 'nexus_db'
 
